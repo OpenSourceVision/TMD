@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Launcher icon colors (Dark Mode) -->
+    <color name="launcher_background">#1E2330</color>
+    <color name="launcher_foreground">#60A5FA</color>
+</resources>

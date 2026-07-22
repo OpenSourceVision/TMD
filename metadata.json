@@ -1,0 +1,6 @@
+{
+  "name": "TMD",
+  "description": "TMD - 原生 Markdown 预览与阅读器",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

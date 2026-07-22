@@ -1,0 +1,140 @@
+name: Android CI & Auto Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: '选择构建类型 (debug / release)'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - release
+          - debug
+      manual_version:
+        description: '手动指定版本号 (例如 1.2。留空则自动从 1.0 开始，每次构建自动递增 0.1)'
+        required: false
+        default: ''
+        type: string
+      release_notes:
+        description: '更新说明 (发布日志)'
+        required: false
+        default: '极简 Markdown 预览器 TMD 自动构建发布'
+        type: string
+
+jobs:
+  build:
+    name: Build & Release Android App
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # 必需权限：用于创建 Release 并上传资源文件
+
+    steps:
+      - name: Check out Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 获取完整历史以确保能正确获取到 git tags
+
+      - name: Calculate Version Tag
+        id: calc_version
+        run: |
+          # 获取所有远程 tags
+          git fetch --tags --force || true
+          
+          # 如果手动指定了版本号，优先使用
+          if [ -n "${{ github.event.inputs.manual_version }}" ]; then
+            NEXT_VERSION="${{ github.event.inputs.manual_version }}"
+            echo "Using manually specified version: $NEXT_VERSION"
+          else
+            # 查找最新符合 vX.Y 格式的 tag
+            LATEST_TAG=$(git tag -l "v[0-9]*.[0-9]*" | sort -V | tail -n 1)
+            echo "Latest tag found: $LATEST_TAG"
+            
+            if [ -z "$LATEST_TAG" ]; then
+              NEXT_VERSION="1.0"
+            else
+              # 移去前缀 v
+              CLEAN_VERSION=${LATEST_TAG#v}
+              # 使用 awk 进行高精度小数加法并格式化为 1 位小数
+              NEXT_VERSION=$(echo "$CLEAN_VERSION" | awk '{printf "%.1f\n", $1 + 0.1}')
+            fi
+          fi
+          
+          NEXT_TAG="v$NEXT_VERSION"
+          echo "version=$NEXT_VERSION" >> $GITHUB_OUTPUT
+          echo "tag=$NEXT_TAG" >> $GITHUB_OUTPUT
+          echo "Calculated next version: $NEXT_VERSION ($NEXT_TAG)"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # 准备签名密钥：优先使用用户配置的 Secrets 证书，如果没有则使用内置的默认 debug.keystore，保持签名一致并避免动态临时证书导致安装冲突
+      - name: Prepare Signing Keystore
+        id: keystore_setup
+        run: |
+          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "Using KEYSTORE_BASE64 secret for release build."
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --d            echo "No KEYSTORE_BASE64 secret found. Using embedded debug.keystore to keep signature 100% consistent."
+            # 内置的 debug.keystore Base64 编码，确保在 GitHub 仓库没有该文件时也能成功构建且签名一致
+            echo "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" | base64 --decode > debug.keystoreb+W/9fl0/cHc29qoj9sOWHjHKYgtQzE6aFU+crRcDQF7bzwzhgxqbMSwydzr58hNI6CPQblBmEtu/Fa4500fmoLFk7qazS1X0rifFcnRvn1bZfE4VytyGrXJKDa+Wy58AcoXehFwTzaDUB3XUKXmjBXTMD4/wd47KiV8p2V+f+7ssRPoqmD36uVVefd0DYixeuoOJnuHcIQsh1F5Xzf1fKTwQIuPqTPmtXTTRoEp7zQWIXEaiJNyqtBzNmQbpqUF3lv21rm0zccx97LtisT2qbSQ/aiwFwFIBySjBNMDEwDQYJYIZIAWUDBAIBBQAEIH2WxoH5h2N/N090Ljb0zULApUtxWG4geVv8L50XO/nbBBSxm9MTi1BX79bpWNISnPuRXu3pqgICJxA=" | base64 --decode > debug.keystore
+            echo "Decoded embedded debug.keystore."
+            echo "keystore_path=${{ github.workspace }}/debug.keystore" >> $GITHUB_OUTPUT
+            echo "store_password=android" >> $GITHUB_OUTPUT
+            echo "key_password=android" >> $GITHUB_OUTPUT
+            echo "key_alias=androiddebugkey" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build Android App
+        env:
+          KEYSTORE_PATH: ${{ steps.keystore_setup.outputs.keystore_path }}
+          STORE_PASSWORD: ${{ steps.keystore_setup.outputs.store_password }}
+          KEY_PASSWORD: ${{ steps.keystore_setup.outputs.key_password }}
+          KEY_ALIAS: ${{ steps.keystore_setup.outputs.key_alias }}
+        run: |
+          if [ "${{ github.event.inputs.build_type }}" = "release" ]; then
+            gradle :app:assembleRelease
+          else
+            gradle :app:assembleDebug
+          fi
+
+      - name: Find and Prepare Build Artifacts
+        id: artifacts
+        run: |
+          if [ "${{ github.event.inputs.build_type }}" = "release" ]; then
+            APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+            echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
+            echo "apk_name=$(basename $APK_PATH)" >> $GITHUB_OUTPUT
+          else
+            APK_PATH=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
+            echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
+            echo "apk_name=$(basename $APK_PATH)" >> $GITHUB_OUTPUT
+          fi
+          echo "Found APK at: $APK_PATH"
+
+      # 自动创建 GitHub Release 并上传 APK 包，同时在 GitHub 上自动创建对应的 tag
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.calc_version.outputs.tag }}
+          name: "TMD v${{ steps.calc_version.outputs.version }} (${{ github.event.inputs.build_type }})"
+          body: |
+            ## TMD Markdown 预览与阅读器 🚀
+            
+            ${{ github.event.inputs.release_notes }}
+            
+            - **构建版本**: v${{ steps.calc_version.outputs.version }}
+            - **构建类型**: ${{ github.event.inputs.build_type }}
+            - **构建时间**: ${{ github.event.repository.updated_at }}
+          draft: false
+          prerelease: false
+          files: ${{ steps.artifacts.outputs.apk_path }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
