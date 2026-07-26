@@ -793,23 +793,18 @@ fun ViewerScreen(
                     }
                 }
             } else if (currentDoc != null) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 16.dp, vertical = 20.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.TopCenter
                 ) {
-                    Box(
+                    MarkdownContent(
+                        content = currentDoc.content,
+                        theme = readingTheme,
                         modifier = Modifier
                             .widthIn(max = 720.dp)
-                            .fillMaxWidth()
-                    ) {
-                        MarkdownContent(
-                            content = currentDoc.content,
-                            theme = readingTheme
-                        )
-                    }
+                            .fillMaxWidth(),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 20.dp)
+                    )
                 }
             } else {
                 Box(

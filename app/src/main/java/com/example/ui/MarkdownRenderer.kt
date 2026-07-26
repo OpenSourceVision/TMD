@@ -60,16 +60,24 @@ import com.example.parser.MarkdownInline
 import com.example.parser.MarkdownParser
 import com.example.parser.TaskItem
 
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.PaddingValues
+
 @Composable
 fun MarkdownContent(
     content: String,
     theme: MarkdownReadingTheme,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    contentPadding: PaddingValues = PaddingValues(0.dp)
 ) {
-    val blocks = MarkdownParser.parse(content)
+    val blocks = remember(content) { MarkdownParser.parse(content) }
 
-    Column(modifier = modifier) {
-        blocks.forEach { block ->
+    LazyColumn(
+        modifier = modifier,
+        contentPadding = contentPadding
+    ) {
+        items(blocks) { block ->
             RenderBlock(block = block, theme = theme)
             Spacer(modifier = Modifier.height(12.dp))
         }
@@ -335,7 +343,9 @@ fun RenderCodeBlock(
     theme: MarkdownReadingTheme
 ) {
     val clipboardManager = LocalClipboardManager.current
-    val highlightedCode = CodeHighlighter.highlight(code, language, theme.isDark)
+    val highlightedCode = remember(code, language, theme.isDark) {
+        CodeHighlighter.highlight(code, language, theme.isDark)
+    }
 
     Card(
         colors = CardDefaults.cardColors(containerColor = theme.cardBackgroundColor),
