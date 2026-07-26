@@ -26,7 +26,9 @@ sealed class MarkdownBlock {
     data class Table(
         val headers: List<String>,
         val rows: List<List<String>>,
-        val alignments: List<TableAlignment> = emptyList()
+        val alignments: List<TableAlignment> = emptyList(),
+        val headerInlines: List<List<MarkdownInline>> = emptyList(),
+        val rowInlines: List<List<List<MarkdownInline>>> = emptyList()
     ) : MarkdownBlock()
     object HorizontalRule : MarkdownBlock()
     data class HtmlBlock(val content: String) : MarkdownBlock()
@@ -154,12 +156,32 @@ object MarkdownParser {
 
         // Pass 1: Extract reference link definitions like [ref]: url "title"
         val refDefRegex = """^\s*\[([^\]]+)\]:\s*(\S+)(?:\s+["'(](.*?)["')])?\s*$""".toRegex()
+        var inFencedCodePass1 = false
+        var currentFencePass1 = ""
         for (line in rawLines) {
+            val trimmedLine = line.trim()
+            if (trimmedLine.startsWith("```") || trimmedLine.startsWith("~~~")) {
+                val fence = if (trimmedLine.startsWith("```")) "```" else "~~~"
+                if (!inFencedCodePass1) {
+                    inFencedCodePass1 = true
+                    currentFencePass1 = fence
+                } else if (trimmedLine.startsWith(currentFencePass1)) {
+                    inFencedCodePass1 = false
+                    currentFencePass1 = ""
+                }
+                filteredLines.add(line)
+                continue
+            }
+            if (inFencedCodePass1) {
+                filteredLines.add(line)
+                continue
+            }
+
             val match = refDefRegex.matchEntire(line)
             if (match != null) {
                 val refKey = match.groupValues[1].trim().lowercase()
                 val url = cleanUrl(match.groupValues[2])
-                val title = match.groupValues[3]
+                val title = match.groupValues[3] ?: ""
                 refMap[refKey] = RefDef(url, title)
             } else {
                 filteredLines.add(line)
@@ -279,7 +301,9 @@ object MarkdownParser {
                     rows.add(parseTableRow(lines[index].trim()))
                     index++
                 }
-                blocks.add(MarkdownBlock.Table(headers, rows, alignments))
+                val headerInlines = headers.map { parseInlines(it, refMap) }
+                val rowInlines = rows.map { row -> row.map { cell -> parseInlines(cell, refMap) } }
+                blocks.add(MarkdownBlock.Table(headers, rows, alignments, headerInlines, rowInlines))
                 continue
             }
 
@@ -300,11 +324,12 @@ object MarkdownParser {
             // 8. Task List (- [ ] or - [x])
             if (taskListRegex.matches(line)) {
                 val taskItems = mutableListOf<TaskItem>()
+                val indentStack = mutableListOf(0)
                 while (index < lines.size && taskListRegex.matches(lines[index])) {
                     val match = taskListRegex.find(lines[index])
                     if (match != null) {
                         val indentSpaces = match.groupValues[1].length
-                        val indentLevel = indentSpaces / 2
+                        val indentLevel = calculateIndentLevel(indentSpaces, indentStack)
                         val isChecked = match.groupValues[2].equals("x", ignoreCase = true)
                         val content = match.groupValues[3].trim()
                         taskItems.add(TaskItem(isChecked, parseInlines(content, refMap), indentLevel))
@@ -319,11 +344,12 @@ object MarkdownParser {
             if (bulletListRegex.matches(line) && !taskListRegex.matches(line)) {
                 val listItems = mutableListOf<List<MarkdownInline>>()
                 val indentLevels = mutableListOf<Int>()
+                val indentStack = mutableListOf(0)
                 while (index < lines.size && bulletListRegex.matches(lines[index]) && !taskListRegex.matches(lines[index])) {
                     val match = bulletListRegex.find(lines[index])
                     if (match != null) {
                         val indentSpaces = match.groupValues[1].length
-                        val indentLevel = indentSpaces / 2
+                        val indentLevel = calculateIndentLevel(indentSpaces, indentStack)
                         val content = match.groupValues[2].trim()
 
                         // Collect multi-line continuation if any
@@ -350,11 +376,12 @@ object MarkdownParser {
             if (orderedListRegex.matches(line)) {
                 val listItems = mutableListOf<List<MarkdownInline>>()
                 val indentLevels = mutableListOf<Int>()
+                val indentStack = mutableListOf(0)
                 while (index < lines.size && orderedListRegex.matches(lines[index])) {
                     val match = orderedListRegex.find(lines[index])
                     if (match != null) {
                         val indentSpaces = match.groupValues[1].length
-                        val indentLevel = indentSpaces / 2
+                        val indentLevel = calculateIndentLevel(indentSpaces, indentStack)
                         val content = match.groupValues[3].trim()
 
                         index++
@@ -377,9 +404,10 @@ object MarkdownParser {
             }
 
             // 11. HTML Block
-            if (trimmed.startsWith("<") && (trimmed.endsWith(">") || trimmed.contains(">"))) {
-                val htmlTagRegex = """^</?[a-zA-Z][^>]*>""".toRegex()
-                if (htmlTagRegex.containsMatchIn(trimmed)) {
+            val angleAutoLinkRegex = """^<(?:https?://|mailto:)[^>]+>$""".toRegex()
+            if (!angleAutoLinkRegex.matches(trimmed) && trimmed.startsWith("<") && (trimmed.endsWith(">") || trimmed.contains(">"))) {
+                val htmlTagRegex = """^</?(?:[a-zA-Z][a-zA-Z0-9-]*)(?:\s+[^>]*)?>""".toRegex()
+                if (!trimmed.startsWith("<http://") && !trimmed.startsWith("<https://") && !trimmed.startsWith("<mailto:") && htmlTagRegex.containsMatchIn(trimmed)) {
                     val htmlLines = mutableListOf<String>()
                     while (index < lines.size && lines[index].trim().isNotEmpty()) {
                         htmlLines.add(lines[index])
@@ -421,6 +449,25 @@ object MarkdownParser {
         }
 
         return blocks
+    }
+
+    private fun calculateIndentLevel(spaces: Int, stack: MutableList<Int>): Int {
+        if (spaces <= 0) {
+            stack.clear()
+            stack.add(0)
+            return 0
+        }
+        if (spaces > stack.last()) {
+            stack.add(spaces)
+            return stack.size - 1
+        }
+        while (stack.size > 1 && spaces < stack.last()) {
+            stack.removeAt(stack.size - 1)
+        }
+        if (spaces >= stack.last()) {
+            return stack.size - 1
+        }
+        return 0
     }
 
     private fun isBlockStarter(trimmed: String): Boolean {

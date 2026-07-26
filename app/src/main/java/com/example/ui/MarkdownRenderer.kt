@@ -112,7 +112,7 @@ fun RenderBlock(
             RenderBlockQuote(block.inlines, block.blocks, theme)
         }
         is MarkdownBlock.Table -> {
-            RenderTable(block.headers, block.rows, block.alignments, theme)
+            RenderTable(block.headers, block.rows, block.alignments, block.headerInlines, block.rowInlines, theme)
         }
         is MarkdownBlock.HorizontalRule -> {
             RenderHorizontalRule(theme)
@@ -291,16 +291,30 @@ fun RenderOrderedList(
     indentLevels: List<Int> = emptyList(),
     theme: MarkdownReadingTheme
 ) {
+    val counters = remember(items, indentLevels) {
+        val list = mutableListOf<String>()
+        val levelCounts = mutableMapOf<Int, Int>()
+        items.forEachIndexed { index, _ ->
+            val indent = indentLevels.getOrNull(index) ?: 0
+            val num = (levelCounts[indent] ?: 0) + 1
+            levelCounts[indent] = num
+            levelCounts.keys.filter { it > indent }.forEach { levelCounts[it] = 0 }
+            list.add("$num.")
+        }
+        list
+    }
+
     Column(modifier = Modifier.padding(start = 8.dp)) {
         items.forEachIndexed { index, inlines ->
             val indent = indentLevels.getOrNull(index) ?: 0
+            val numberText = counters.getOrNull(index) ?: "${index + 1}."
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(start = (indent * 16).dp, top = 3.dp, bottom = 3.dp)
             ) {
                 Text(
-                    text = "${index + 1}.",
+                    text = numberText,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold,
                     color = theme.accentColor,
@@ -473,6 +487,8 @@ fun RenderTable(
     headers: List<String>,
     rows: List<List<String>>,
     alignments: List<com.example.parser.TableAlignment> = emptyList(),
+    headerInlines: List<List<MarkdownInline>> = emptyList(),
+    rowInlines: List<List<List<MarkdownInline>>> = emptyList(),
     theme: MarkdownReadingTheme
 ) {
     Card(
@@ -503,8 +519,10 @@ fun RenderTable(
                                 com.example.parser.TableAlignment.RIGHT -> androidx.compose.ui.text.style.TextAlign.End
                                 else -> androidx.compose.ui.text.style.TextAlign.Start
                             }
+                            val parsedInlines = headerInlines.getOrNull(colIndex) ?: MarkdownParser.parseInlines(headerText)
+                            val annotatedString = buildAnnotatedStringFromInlines(parsedInlines, theme)
                             Text(
-                                text = headerText,
+                                text = annotatedString,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 14.sp,
                                 color = theme.headerColor,
@@ -529,7 +547,8 @@ fun RenderTable(
                     ) {
                         headers.indices.forEach { colIndex ->
                             val cellText = rowCells.getOrNull(colIndex) ?: ""
-                            val parsedInlines = MarkdownParser.parseInlines(cellText)
+                            val parsedInlines = rowInlines.getOrNull(rowIndex)?.getOrNull(colIndex)
+                                ?: MarkdownParser.parseInlines(cellText)
                             val annotatedString = buildAnnotatedStringFromInlines(parsedInlines, theme)
                             val align = alignments.getOrNull(colIndex) ?: com.example.parser.TableAlignment.LEFT
                             val textAlign = when (align) {

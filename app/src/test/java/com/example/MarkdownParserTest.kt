@@ -159,4 +159,64 @@ class MarkdownParserTest {
         }
         assertTrue(fullText.contains("Escaped *asterisk*"))
     }
+
+    @Test
+    fun testReferenceLinkInsideCodeBlockNotStripped() {
+        val markdown = """
+            ```markdown
+            [ref]: https://example.com "Title"
+            ```
+        """.trimIndent()
+
+        val blocks = parser.parse(markdown)
+        assertEquals(1, blocks.size)
+        assertTrue(blocks[0] is MarkdownBlock.CodeBlock)
+        val code = (blocks[0] as MarkdownBlock.CodeBlock).code
+        assertTrue(code.contains("[ref]: https://example.com"))
+    }
+
+    @Test
+    fun testStandaloneAngleAutolinkNotHtmlBlock() {
+        val markdown = "<https://example.com>"
+        val blocks = parser.parse(markdown)
+        assertEquals(1, blocks.size)
+        assertTrue(blocks[0] is MarkdownBlock.Paragraph)
+        val p = blocks[0] as MarkdownBlock.Paragraph
+        val link = p.inlines.filterIsInstance<MarkdownInline.Link>().firstOrNull()
+        assertTrue(link != null)
+        assertEquals("https://example.com", link?.url)
+    }
+
+    @Test
+    fun testTableCellReferenceLinks() {
+        val markdown = """
+            | Link |
+            | --- |
+            | [Example][ex] |
+
+            [ex]: https://example.com
+        """.trimIndent()
+
+        val blocks = parser.parse(markdown)
+        val table = blocks.filterIsInstance<MarkdownBlock.Table>().firstOrNull()
+        assertTrue(table != null)
+        val cellInline = table?.rowInlines?.firstOrNull()?.firstOrNull()?.firstOrNull()
+        assertTrue(cellInline is MarkdownInline.Link)
+        assertEquals("https://example.com", (cellInline as MarkdownInline.Link).url)
+    }
+
+    @Test
+    fun testFlexibleListIndentation() {
+        val markdown = """
+            - Item 1
+                - Item 1.1 (4 spaces)
+                - Item 1.2 (4 spaces)
+            - Item 2
+        """.trimIndent()
+
+        val blocks = parser.parse(markdown)
+        val bulletList = blocks.filterIsInstance<MarkdownBlock.BulletList>().firstOrNull()
+        assertTrue(bulletList != null)
+        assertEquals(listOf(0, 1, 1, 0), bulletList?.indentLevels)
+    }
 }
