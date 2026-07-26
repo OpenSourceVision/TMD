@@ -12,6 +12,7 @@ import java.util.regex.Pattern
 object CodeHighlighter {
 
     fun highlight(code: String, language: String, isDark: Boolean): AnnotatedString {
+        if (code.isEmpty()) return AnnotatedString("")
         val lang = language.lowercase()
         return when (lang) {
             "kotlin", "kt", "java" -> highlightKotlin(code, isDark)
@@ -26,14 +27,27 @@ object CodeHighlighter {
     private fun highlightKotlin(code: String, isDark: Boolean): AnnotatedString {
         val builder = AnnotatedString.Builder(code)
         val themeColors = if (isDark) DarkColors else LightColors
+        val occupied = BooleanArray(code.length)
 
-        // 1. Types & PascalCase names
-        applyRegex(builder, code, """\b[A-Z][a-zA-Z0-9_]*\b""", SpanStyle(color = themeColors.typeColor, fontWeight = FontWeight.Bold))
+        // 1. Strings & Comments (Lexical Order)
+        highlightStringsAndComments(
+            builder, code, occupied,
+            regex = """\"\"\"[\s\S]*?\"\"\"|"[^"\\\r\n]*(?:\\.[^"\\\r\n]*)*"|'[^'\\\r\n]*(?:\\.[^'\\\r\n]*)*'|//.*|/\*[\s\S]*?\*/""",
+            stringStyle = SpanStyle(color = themeColors.stringColor),
+            commentStyle = SpanStyle(color = themeColors.commentColor, fontStyle = FontStyle.Italic),
+            isCommentPrefix = { it.startsWith("//") || it.startsWith("/*") }
+        )
 
-        // 2. Numbers
-        applyRegex(builder, code, """\b(0x[0-9a-fA-F]+|\d+(\.\d+)?[fFL]?)\b""", SpanStyle(color = themeColors.numberColor))
+        // 2. Annotations
+        applyRegexWithMask(builder, code, """@[a-zA-Z0-9_]+""", SpanStyle(color = themeColors.annotationColor), occupied)
 
-        // 3. Keywords
+        // 3. Types & PascalCase names
+        applyRegexWithMask(builder, code, """\b[A-Z][a-zA-Z0-9_]*\b""", SpanStyle(color = themeColors.typeColor, fontWeight = FontWeight.Bold), occupied)
+
+        // 4. Numbers
+        applyRegexWithMask(builder, code, """\b(0x[0-9a-fA-F]+|\d+(\.\d+)?[fFL]?)\b""", SpanStyle(color = themeColors.numberColor), occupied)
+
+        // 5. Keywords
         val keywords = listOf(
             "package", "import", "class", "interface", "object", "fun", "val", "var",
             "return", "if", "else", "when", "for", "while", "do", "break", "continue",
@@ -41,19 +55,7 @@ object CodeHighlighter {
             "launch", "delay", "suspend", "null", "true", "false", "in", "is", "as", "throw", "try", "catch", "finally"
         )
         val keywordPattern = "\\b(" + keywords.joinToString("|") + ")\\b"
-        applyRegex(builder, code, keywordPattern, SpanStyle(color = themeColors.keywordColor, fontWeight = FontWeight.Bold))
-
-        // 4. Annotations
-        applyRegex(builder, code, """@[a-zA-Z0-9_]+""", SpanStyle(color = themeColors.annotationColor))
-
-        // 5. Strings
-        applyRegex(builder, code, """"[^"\\]*(?:\\.[^"\\]*)*"""", SpanStyle(color = themeColors.stringColor))
-        applyRegex(builder, code, """'[^'\\]*(?:\\.[^'\\]*)*'""", SpanStyle(color = themeColors.stringColor))
-        applyRegex(builder, code, """\"\"\"[\s\S]*?\"\"\"""", SpanStyle(color = themeColors.stringColor))
-
-        // 6. Comments (applied last to overwrite everything inside)
-        applyRegex(builder, code, """//.*""", SpanStyle(color = themeColors.commentColor, fontStyle = FontStyle.Italic))
-        applyRegex(builder, code, """/\*[\s\S]*?\*/""", SpanStyle(color = themeColors.commentColor, fontStyle = FontStyle.Italic))
+        applyRegexWithMask(builder, code, keywordPattern, SpanStyle(color = themeColors.keywordColor, fontWeight = FontWeight.Bold), occupied)
 
         return builder.toAnnotatedString()
     }
@@ -61,30 +63,31 @@ object CodeHighlighter {
     private fun highlightPython(code: String, isDark: Boolean): AnnotatedString {
         val builder = AnnotatedString.Builder(code)
         val themeColors = if (isDark) DarkColors else LightColors
+        val occupied = BooleanArray(code.length)
 
-        // 1. Numbers
-        applyRegex(builder, code, """\b(\d+(\.\d+)?)\b""", SpanStyle(color = themeColors.numberColor))
+        // 1. Strings & Comments
+        highlightStringsAndComments(
+            builder, code, occupied,
+            regex = """\"\"\"[\s\S]*?\"\"\"|'''[\s\S]*?'''|"[^"\\\r\n]*(?:\\.[^"\\\r\n]*)*"|'[^'\\\r\n]*(?:\\.[^'\\\r\n]*)*'|#.*""",
+            stringStyle = SpanStyle(color = themeColors.stringColor),
+            commentStyle = SpanStyle(color = themeColors.commentColor, fontStyle = FontStyle.Italic),
+            isCommentPrefix = { it.startsWith("#") }
+        )
 
-        // 2. Keywords
+        // 2. Decorators
+        applyRegexWithMask(builder, code, """@[a-zA-Z0-9_]+""", SpanStyle(color = themeColors.annotationColor), occupied)
+
+        // 3. Numbers
+        applyRegexWithMask(builder, code, """\b(\d+(\.\d+)?)\b""", SpanStyle(color = themeColors.numberColor), occupied)
+
+        // 4. Keywords
         val keywords = listOf(
             "def", "class", "return", "if", "elif", "else", "for", "while", "in", "is", "not",
             "and", "or", "import", "from", "as", "try", "except", "finally", "with", "lambda",
             "print", "len", "range", "None", "True", "False", "pass", "break", "continue"
         )
         val keywordPattern = "\\b(" + keywords.joinToString("|") + ")\\b"
-        applyRegex(builder, code, keywordPattern, SpanStyle(color = themeColors.keywordColor, fontWeight = FontWeight.Bold))
-
-        // 3. Decorators
-        applyRegex(builder, code, """@[a-zA-Z0-9_]+""", SpanStyle(color = themeColors.annotationColor))
-
-        // 4. Strings
-        applyRegex(builder, code, """'[^'\\]*(?:\\.[^'\\]*)*'""", SpanStyle(color = themeColors.stringColor))
-        applyRegex(builder, code, """"[^"\\]*(?:\\.[^"\\]*)*"""", SpanStyle(color = themeColors.stringColor))
-        applyRegex(builder, code, """'''[\s\S]*?'''""", SpanStyle(color = themeColors.stringColor))
-        applyRegex(builder, code, """\"\"\"[\s\S]*?\"\"\"""", SpanStyle(color = themeColors.stringColor))
-
-        // 5. Comments
-        applyRegex(builder, code, """#.*""", SpanStyle(color = themeColors.commentColor, fontStyle = FontStyle.Italic))
+        applyRegexWithMask(builder, code, keywordPattern, SpanStyle(color = themeColors.keywordColor, fontWeight = FontWeight.Bold), occupied)
 
         return builder.toAnnotatedString()
     }
@@ -92,16 +95,17 @@ object CodeHighlighter {
     private fun highlightJson(code: String, isDark: Boolean): AnnotatedString {
         val builder = AnnotatedString.Builder(code)
         val themeColors = if (isDark) DarkColors else LightColors
+        val occupied = BooleanArray(code.length)
 
-        // 1. JSON values
-        applyRegex(builder, code, """\b(true|false|null)\b""", SpanStyle(color = themeColors.keywordColor, fontWeight = FontWeight.Bold))
-        applyRegex(builder, code, """\b(-?\d+(\.\d+)?([eE][+-]?\d+)?)\b""", SpanStyle(color = themeColors.numberColor))
+        // 1. JSON Keys (before colon)
+        applyRegexWithMask(builder, code, """"[^"\\]*"\s*(?=\:)""", SpanStyle(color = themeColors.typeColor, fontWeight = FontWeight.Bold), occupied)
 
-        // 2. JSON Keys (before colon)
-        applyRegex(builder, code, """"[^"\\]*"\s*(?=\:)""", SpanStyle(color = themeColors.typeColor, fontWeight = FontWeight.Bold))
+        // 2. JSON String values
+        applyRegexWithMask(builder, code, """"(?:[^"\\]|\\.)*"""", SpanStyle(color = themeColors.stringColor), occupied)
 
-        // 3. JSON String values (not followed by colon)
-        applyRegex(builder, code, """"(?:[^"\\]|\\.)*"(?!\s*:)""", SpanStyle(color = themeColors.stringColor))
+        // 3. JSON numbers & booleans
+        applyRegexWithMask(builder, code, """\b(true|false|null)\b""", SpanStyle(color = themeColors.keywordColor, fontWeight = FontWeight.Bold), occupied)
+        applyRegexWithMask(builder, code, """\b(-?\d+(\.\d+)?([eE][+-]?\d+)?)\b""", SpanStyle(color = themeColors.numberColor), occupied)
 
         return builder.toAnnotatedString()
     }
@@ -109,20 +113,23 @@ object CodeHighlighter {
     private fun highlightHtml(code: String, isDark: Boolean): AnnotatedString {
         val builder = AnnotatedString.Builder(code)
         val themeColors = if (isDark) DarkColors else LightColors
+        val occupied = BooleanArray(code.length)
 
-        // 1. Attributes values
-        applyRegex(builder, code, """"[^"]*"""", SpanStyle(color = themeColors.stringColor))
-        applyRegex(builder, code, """'[^']*'""", SpanStyle(color = themeColors.stringColor))
+        // 1. Comments & Strings
+        highlightStringsAndComments(
+            builder, code, occupied,
+            regex = """<!--[\s\S]*?-->|"[^"]*"|'[^']*'""",
+            stringStyle = SpanStyle(color = themeColors.stringColor),
+            commentStyle = SpanStyle(color = themeColors.commentColor, fontStyle = FontStyle.Italic),
+            isCommentPrefix = { it.startsWith("<!--") }
+        )
 
         // 2. Tag brackets and tag names
-        applyRegex(builder, code, """<[a-zA-Z0-9!\-/]+""", SpanStyle(color = themeColors.keywordColor, fontWeight = FontWeight.Bold))
-        applyRegex(builder, code, """>""", SpanStyle(color = themeColors.keywordColor, fontWeight = FontWeight.Bold))
+        applyRegexWithMask(builder, code, """<[a-zA-Z0-9!\-/]+""", SpanStyle(color = themeColors.keywordColor, fontWeight = FontWeight.Bold), occupied)
+        applyRegexWithMask(builder, code, """>""", SpanStyle(color = themeColors.keywordColor, fontWeight = FontWeight.Bold), occupied)
 
-        // 3. Attribute names (e.g. href=)
-        applyRegex(builder, code, """\b[a-zA-Z\-]+(?=\=)""", SpanStyle(color = themeColors.annotationColor))
-
-        // 4. Comments
-        applyRegex(builder, code, """<!--[\s\S]*?-->""", SpanStyle(color = themeColors.commentColor, fontStyle = FontStyle.Italic))
+        // 3. Attribute names
+        applyRegexWithMask(builder, code, """\b[a-zA-Z\-]+(?=\=)""", SpanStyle(color = themeColors.annotationColor), occupied)
 
         return builder.toAnnotatedString()
     }
@@ -130,11 +137,21 @@ object CodeHighlighter {
     private fun highlightJs(code: String, isDark: Boolean): AnnotatedString {
         val builder = AnnotatedString.Builder(code)
         val themeColors = if (isDark) DarkColors else LightColors
+        val occupied = BooleanArray(code.length)
 
-        // 1. Numbers
-        applyRegex(builder, code, """\b(\d+(\.\d+)?)\b""", SpanStyle(color = themeColors.numberColor))
+        // 1. Strings & Comments
+        highlightStringsAndComments(
+            builder, code, occupied,
+            regex = """`[\s\S]*?`|"[^"\\\r\n]*(?:\\.[^"\\\r\n]*)*"|'[^'\\\r\n]*(?:\\.[^'\\\r\n]*)*'|//.*|/\*[\s\S]*?\*/""",
+            stringStyle = SpanStyle(color = themeColors.stringColor),
+            commentStyle = SpanStyle(color = themeColors.commentColor, fontStyle = FontStyle.Italic),
+            isCommentPrefix = { it.startsWith("//") || it.startsWith("/*") }
+        )
 
-        // 2. Keywords
+        // 2. Numbers
+        applyRegexWithMask(builder, code, """\b(\d+(\.\d+)?)\b""", SpanStyle(color = themeColors.numberColor), occupied)
+
+        // 3. Keywords
         val keywords = listOf(
             "const", "let", "var", "function", "return", "if", "else", "for", "while", "do",
             "switch", "case", "default", "break", "continue", "import", "export", "from", "class",
@@ -142,16 +159,7 @@ object CodeHighlighter {
             "null", "undefined", "true", "false", "typeof", "instanceof"
         )
         val keywordPattern = "\\b(" + keywords.joinToString("|") + ")\\b"
-        applyRegex(builder, code, keywordPattern, SpanStyle(color = themeColors.keywordColor, fontWeight = FontWeight.Bold))
-
-        // 3. Strings
-        applyRegex(builder, code, """'[^'\\]*(?:\\.[^'\\]*)*'""", SpanStyle(color = themeColors.stringColor))
-        applyRegex(builder, code, """"[^"\\]*(?:\\.[^'\\]*)*"""", SpanStyle(color = themeColors.stringColor))
-        applyRegex(builder, code, """`[\s\S]*?`""", SpanStyle(color = themeColors.stringColor))
-
-        // 4. Comments
-        applyRegex(builder, code, """//.*""", SpanStyle(color = themeColors.commentColor, fontStyle = FontStyle.Italic))
-        applyRegex(builder, code, """/\*[\s\S]*?\*/""", SpanStyle(color = themeColors.commentColor, fontStyle = FontStyle.Italic))
+        applyRegexWithMask(builder, code, keywordPattern, SpanStyle(color = themeColors.keywordColor, fontWeight = FontWeight.Bold), occupied)
 
         return builder.toAnnotatedString()
     }
@@ -159,28 +167,87 @@ object CodeHighlighter {
     private fun highlightGeneric(code: String, isDark: Boolean): AnnotatedString {
         val builder = AnnotatedString.Builder(code)
         val themeColors = if (isDark) DarkColors else LightColors
+        val occupied = BooleanArray(code.length)
 
-        // Simple keywords
+        // 1. Strings & Comments
+        highlightStringsAndComments(
+            builder, code, occupied,
+            regex = """"([^"\\]|\\.)*"|//.*|#.*""",
+            stringStyle = SpanStyle(color = themeColors.stringColor),
+            commentStyle = SpanStyle(color = themeColors.commentColor, fontStyle = FontStyle.Italic),
+            isCommentPrefix = { it.startsWith("//") || it.startsWith("#") }
+        )
+
+        // 2. Keywords
         val keywords = listOf("class", "function", "fn", "def", "func", "return", "if", "else", "for", "while", "import", "package")
         val keywordPattern = "\\b(" + keywords.joinToString("|") + ")\\b"
-        applyRegex(builder, code, keywordPattern, SpanStyle(color = themeColors.keywordColor, fontWeight = FontWeight.Bold))
-
-        // String Literals
-        applyRegex(builder, code, """"[^"\\]*(?:\\.[^"\\]*)*"""", SpanStyle(color = themeColors.stringColor))
-
-        // Comments
-        applyRegex(builder, code, """//.*""", SpanStyle(color = themeColors.commentColor, fontStyle = FontStyle.Italic))
-        applyRegex(builder, code, """#.*""", SpanStyle(color = themeColors.commentColor, fontStyle = FontStyle.Italic))
+        applyRegexWithMask(builder, code, keywordPattern, SpanStyle(color = themeColors.keywordColor, fontWeight = FontWeight.Bold), occupied)
 
         return builder.toAnnotatedString()
     }
 
-    private fun applyRegex(builder: AnnotatedString.Builder, text: String, regex: String, style: SpanStyle) {
+    private fun highlightStringsAndComments(
+        builder: AnnotatedString.Builder,
+        text: String,
+        occupied: BooleanArray,
+        regex: String,
+        stringStyle: SpanStyle,
+        commentStyle: SpanStyle,
+        isCommentPrefix: (String) -> Boolean
+    ) {
         try {
             val pattern = Pattern.compile(regex)
             val matcher = pattern.matcher(text)
             while (matcher.find()) {
-                builder.addStyle(style, matcher.start(), matcher.end())
+                val start = matcher.start()
+                val end = matcher.end()
+                var isOverlap = false
+                for (i in start until end) {
+                    if (occupied[i]) {
+                        isOverlap = true
+                        break
+                    }
+                }
+                if (!isOverlap) {
+                    val matchedText = matcher.group()
+                    val style = if (isCommentPrefix(matchedText)) commentStyle else stringStyle
+                    builder.addStyle(style, start, end)
+                    for (i in start until end) {
+                        occupied[i] = true
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            // Safe fallback
+        }
+    }
+
+    private fun applyRegexWithMask(
+        builder: AnnotatedString.Builder,
+        text: String,
+        regex: String,
+        style: SpanStyle,
+        occupied: BooleanArray
+    ) {
+        try {
+            val pattern = Pattern.compile(regex)
+            val matcher = pattern.matcher(text)
+            while (matcher.find()) {
+                val start = matcher.start()
+                val end = matcher.end()
+                var isOverlap = false
+                for (i in start until end) {
+                    if (occupied[i]) {
+                        isOverlap = true
+                        break
+                    }
+                }
+                if (!isOverlap) {
+                    builder.addStyle(style, start, end)
+                    for (i in start until end) {
+                        occupied[i] = true
+                    }
+                }
             }
         } catch (e: Exception) {
             // Safe fallback

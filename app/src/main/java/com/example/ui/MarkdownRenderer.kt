@@ -30,6 +30,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -147,6 +148,11 @@ fun RenderHeader(
     }
 }
 
+private sealed class ParagraphChunk {
+    data class TextChunk(val textInlines: List<MarkdownInline>) : ParagraphChunk()
+    data class ImageChunk(val image: MarkdownInline.Image) : ParagraphChunk()
+}
+
 @Composable
 fun RenderParagraph(
     inlines: List<MarkdownInline>,
@@ -154,55 +160,76 @@ fun RenderParagraph(
 ) {
     val uriHandler = LocalUriHandler.current
 
-    // Check if there are any image inlines in this paragraph
-    val imageInlines = inlines.filterIsInstance<MarkdownInline.Image>()
-    if (imageInlines.isNotEmpty()) {
-        imageInlines.forEach { img ->
-            RenderImageInline(img, theme)
-            Spacer(modifier = Modifier.height(8.dp))
+    val chunks = remember(inlines) {
+        val list = mutableListOf<ParagraphChunk>()
+        var currentTextInlines = mutableListOf<MarkdownInline>()
+
+        for (inline in inlines) {
+            if (inline is MarkdownInline.Image) {
+                if (currentTextInlines.isNotEmpty()) {
+                    list.add(ParagraphChunk.TextChunk(currentTextInlines))
+                    currentTextInlines = mutableListOf()
+                }
+                list.add(ParagraphChunk.ImageChunk(inline))
+            } else {
+                currentTextInlines.add(inline)
+            }
         }
+        if (currentTextInlines.isNotEmpty()) {
+            list.add(ParagraphChunk.TextChunk(currentTextInlines))
+        }
+        list
     }
 
-    // Filter out image elements for normal paragraph rendering
-    val textInlines = inlines.filter { it !is MarkdownInline.Image }
-    if (textInlines.isNotEmpty()) {
-        val annotatedString = buildAnnotatedStringFromInlines(textInlines, theme)
-        val hasLinks = textInlines.any { hasLinkInline(it) }
-
-        if (hasLinks) {
-            ClickableText(
-                text = annotatedString,
-                style = TextStyle(
-                    color = theme.textColor,
-                    fontSize = 16.sp,
-                    lineHeight = 24.sp
-                ),
-                modifier = Modifier.fillMaxWidth(),
-                onClick = { offset ->
-                    annotatedString.getStringAnnotations(tag = "URL", start = offset, end = offset)
-                        .firstOrNull()?.let { annotation ->
-                            try {
-                                var url = annotation.item.trim()
-                                if (!url.startsWith("http://") && !url.startsWith("https://") && !url.startsWith("mailto:")) {
-                                    url = "https://$url"
-                                }
-                                uriHandler.openUri(url)
-                            } catch (e: Exception) {
-                                // Ignore failure
-                            }
-                        }
+    Column {
+        chunks.forEach { chunk ->
+            when (chunk) {
+                is ParagraphChunk.ImageChunk -> {
+                    RenderImageInline(chunk.image, theme)
+                    Spacer(modifier = Modifier.height(8.dp))
                 }
-            )
-        } else {
-            Text(
-                text = annotatedString,
-                style = TextStyle(
-                    color = theme.textColor,
-                    fontSize = 16.sp,
-                    lineHeight = 24.sp
-                ),
-                modifier = Modifier.fillMaxWidth()
-            )
+                is ParagraphChunk.TextChunk -> {
+                    val textInlines = chunk.textInlines
+                    val annotatedString = buildAnnotatedStringFromInlines(textInlines, theme)
+                    val hasLinks = textInlines.any { hasLinkInline(it) }
+
+                    if (hasLinks) {
+                        ClickableText(
+                            text = annotatedString,
+                            style = TextStyle(
+                                color = theme.textColor,
+                                fontSize = 16.sp,
+                                lineHeight = 24.sp
+                            ),
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = { offset ->
+                                annotatedString.getStringAnnotations(tag = "URL", start = offset, end = offset)
+                                    .firstOrNull()?.let { annotation ->
+                                        try {
+                                            var url = annotation.item.trim()
+                                            if (!url.startsWith("http://") && !url.startsWith("https://") && !url.startsWith("mailto:")) {
+                                                url = "https://$url"
+                                            }
+                                            uriHandler.openUri(url)
+                                        } catch (e: Exception) {
+                                            // Ignore failure
+                                        }
+                                    }
+                            }
+                        )
+                    } else {
+                        Text(
+                            text = annotatedString,
+                            style = TextStyle(
+                                color = theme.textColor,
+                                fontSize = 16.sp,
+                                lineHeight = 24.sp
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+            }
         }
     }
 }

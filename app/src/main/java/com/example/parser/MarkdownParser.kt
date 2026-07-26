@@ -200,16 +200,38 @@ object MarkdownParser {
     }
 
     private fun isTableSeparator(line: String): Boolean {
-        if (!line.contains("|") || !line.contains("-")) return false
-        val cells = line.split("|").map { it.trim() }.filter { it.isNotEmpty() }
-        return cells.isNotEmpty() && cells.all { cell -> cell.all { c -> c == '-' || c == ':' || c == ' ' } }
+        val cells = parseTableRow(line)
+        return cells.isNotEmpty() && cells.all { cell ->
+            val cleaned = cell.trim()
+            cleaned.isNotEmpty() && cleaned.all { c -> c == '-' || c == ':' || c == ' ' }
+        }
     }
 
     private fun parseTableRow(line: String): List<String> {
         var trimmed = line.trim()
         if (trimmed.startsWith("|")) trimmed = trimmed.substring(1)
-        if (trimmed.endsWith("|")) trimmed = trimmed.substring(0, trimmed.length - 1)
-        return trimmed.split("|").map { it.trim() }
+        if (trimmed.endsWith("|") && !trimmed.endsWith("\\|")) trimmed = trimmed.substring(0, trimmed.length - 1)
+
+        val cells = mutableListOf<String>()
+        val currentCell = StringBuilder()
+        var isEscaped = false
+
+        for (i in trimmed.indices) {
+            val char = trimmed[i]
+            if (isEscaped) {
+                currentCell.append(char)
+                isEscaped = false
+            } else if (char == '\\' && i + 1 < trimmed.length && trimmed[i + 1] == '|') {
+                isEscaped = true
+            } else if (char == '|') {
+                cells.add(currentCell.toString().trim())
+                currentCell.clear()
+            } else {
+                currentCell.append(char)
+            }
+        }
+        cells.add(currentCell.toString().trim())
+        return cells
     }
 
     private fun joinParagraphLines(lines: List<String>): String {
@@ -249,9 +271,9 @@ object MarkdownParser {
         val imageRegex = """!\[(.*?)\]\((.*?)\)""".toRegex()
         val linkRegex = """(?<!\!)\[(.*?)\]\((.*?)\)""".toRegex()
         val autoLinkRegex = """(?<![\(\]])\b(https?://[^\s<>\)]+)\b""".toRegex()
-        val boldItalicRegex = """\*\*\*(.*?)\*\*\*|___(.*?)___""".toRegex()
-        val boldRegex = """\*\*(.*?)\*\*|__(.*?)__""".toRegex()
-        val italicRegex = """\*(.*?)\*|_(.*?)_""".toRegex()
+        val boldItalicRegex = """\*\*\*(.*?)\*\*\*|(?<!\w)___(.*?)___(?!\w)""".toRegex()
+        val boldRegex = """\*\*(.*?)\*\*|(?<!\w)__(.*?)__(?!\w)""".toRegex()
+        val italicRegex = """\*(.*?)\*|(?<!\w)_(.*?)_(?!\w)""".toRegex()
         val strikethroughRegex = """~~(.*?)~~""".toRegex()
         val inlineCodeRegex = """`(.*?)`""".toRegex()
 

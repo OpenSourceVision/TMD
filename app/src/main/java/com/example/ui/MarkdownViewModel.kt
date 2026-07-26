@@ -175,10 +175,12 @@ class MarkdownViewModel(
 
     fun deleteDocument(document: MarkdownDocument) {
         viewModelScope.launch {
+            val remainingDocs = userDocuments.value.filter { it.id != document.id }
+            val nextDoc = remainingDocs.firstOrNull()
+
             repository.delete(document)
+
             if (_currentDocument.value?.id == document.id) {
-                // Try selecting another user document after deleting
-                val nextDoc = repository.userDocuments.firstOrNull()?.firstOrNull()
                 _currentDocument.value = nextDoc
                 _currentScreen.value = AppScreen.FILES
             }
