@@ -9,7 +9,7 @@ import org.junit.Test
 
 class MarkdownParserTest {
 
-    private val parser = MarkdownParser()
+    private val parser = MarkdownParser
 
     @Test
     fun testSnakeCaseNameNotItalic() {
@@ -90,7 +90,7 @@ class MarkdownParserTest {
         val blocks = parser.parse(markdown)
         assertTrue(blocks.any { it is MarkdownBlock.Header && it.level == 1 })
         assertTrue(blocks.any { it is MarkdownBlock.Header && it.level == 2 })
-        assertTrue(blocks.any { it is MarkdownBlock.UnorderedList })
+        assertTrue(blocks.any { it is MarkdownBlock.BulletList })
         assertTrue(blocks.any { it is MarkdownBlock.OrderedList })
     }
 }
