@@ -97,10 +97,10 @@ fun RenderBlock(
             RenderParagraph(block.inlines, theme)
         }
         is MarkdownBlock.BulletList -> {
-            RenderBulletList(block.items, theme)
+            RenderBulletList(block.items, block.indentLevels, theme)
         }
         is MarkdownBlock.OrderedList -> {
-            RenderOrderedList(block.items, theme)
+            RenderOrderedList(block.items, block.indentLevels, theme)
         }
         is MarkdownBlock.TaskList -> {
             RenderTaskList(block.items, theme)
@@ -109,13 +109,16 @@ fun RenderBlock(
             RenderCodeBlock(block.code, block.language, theme)
         }
         is MarkdownBlock.BlockQuote -> {
-            RenderBlockQuote(block.inlines, theme)
+            RenderBlockQuote(block.inlines, block.blocks, theme)
         }
         is MarkdownBlock.Table -> {
-            RenderTable(block.headers, block.rows, theme)
+            RenderTable(block.headers, block.rows, block.alignments, theme)
         }
         is MarkdownBlock.HorizontalRule -> {
             RenderHorizontalRule(theme)
+        }
+        is MarkdownBlock.HtmlBlock -> {
+            RenderHtmlBlock(block.content, theme)
         }
     }
 }
@@ -256,14 +259,16 @@ private fun hasLinkInline(inline: MarkdownInline): Boolean {
 @Composable
 fun RenderBulletList(
     items: List<List<MarkdownInline>>,
+    indentLevels: List<Int> = emptyList(),
     theme: MarkdownReadingTheme
 ) {
     Column(modifier = Modifier.padding(start = 8.dp)) {
-        items.forEach { inlines ->
+        items.forEachIndexed { index, inlines ->
+            val indent = indentLevels.getOrNull(index) ?: 0
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 3.dp)
+                    .padding(start = (indent * 16).dp, top = 3.dp, bottom = 3.dp)
             ) {
                 Text(
                     text = "•",
@@ -283,14 +288,16 @@ fun RenderBulletList(
 @Composable
 fun RenderOrderedList(
     items: List<List<MarkdownInline>>,
+    indentLevels: List<Int> = emptyList(),
     theme: MarkdownReadingTheme
 ) {
     Column(modifier = Modifier.padding(start = 8.dp)) {
         items.forEachIndexed { index, inlines ->
+            val indent = indentLevels.getOrNull(index) ?: 0
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 3.dp)
+                    .padding(start = (indent * 16).dp, top = 3.dp, bottom = 3.dp)
             ) {
                 Text(
                     text = "${index + 1}.",
@@ -317,7 +324,7 @@ fun RenderTaskList(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 3.dp),
+                    .padding(start = (item.indentLevel * 16).dp, top = 3.dp, bottom = 3.dp),
                 verticalAlignment = Alignment.Top
             ) {
                 Icon(
@@ -417,6 +424,7 @@ fun RenderCodeBlock(
 @Composable
 fun RenderBlockQuote(
     inlines: List<MarkdownInline>,
+    blocks: List<MarkdownBlock> = emptyList(),
     theme: MarkdownReadingTheme
 ) {
     Box(
@@ -437,16 +445,25 @@ fun RenderBlockQuote(
         }
 
         Box(modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 12.dp, end = 12.dp)) {
-            val annotatedString = buildAnnotatedStringFromInlines(inlines, theme)
-            Text(
-                text = annotatedString,
-                style = TextStyle(
-                    color = theme.textColor.copy(alpha = 0.9f),
-                    fontSize = 15.sp,
-                    fontStyle = FontStyle.Italic,
-                    lineHeight = 22.sp
+            if (blocks.isNotEmpty()) {
+                Column {
+                    blocks.forEach { b ->
+                        RenderBlock(block = b, theme = theme)
+                        Spacer(modifier = Modifier.height(6.dp))
+                    }
+                }
+            } else {
+                val annotatedString = buildAnnotatedStringFromInlines(inlines, theme)
+                Text(
+                    text = annotatedString,
+                    style = TextStyle(
+                        color = theme.textColor.copy(alpha = 0.9f),
+                        fontSize = 15.sp,
+                        fontStyle = FontStyle.Italic,
+                        lineHeight = 22.sp
+                    )
                 )
-            )
+            }
         }
     }
 }
@@ -455,6 +472,7 @@ fun RenderBlockQuote(
 fun RenderTable(
     headers: List<String>,
     rows: List<List<String>>,
+    alignments: List<com.example.parser.TableAlignment> = emptyList(),
     theme: MarkdownReadingTheme
 ) {
     Card(
@@ -478,12 +496,19 @@ fun RenderTable(
                             .background(theme.dividerColor.copy(alpha = 0.35f))
                             .padding(vertical = 8.dp, horizontal = 4.dp)
                     ) {
-                        headers.forEach { headerText ->
+                        headers.forEachIndexed { colIndex, headerText ->
+                            val align = alignments.getOrNull(colIndex) ?: com.example.parser.TableAlignment.LEFT
+                            val textAlign = when (align) {
+                                com.example.parser.TableAlignment.CENTER -> androidx.compose.ui.text.style.TextAlign.Center
+                                com.example.parser.TableAlignment.RIGHT -> androidx.compose.ui.text.style.TextAlign.End
+                                else -> androidx.compose.ui.text.style.TextAlign.Start
+                            }
                             Text(
                                 text = headerText,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 14.sp,
                                 color = theme.headerColor,
+                                textAlign = textAlign,
                                 modifier = Modifier
                                     .widthIn(min = 100.dp, max = 220.dp)
                                     .padding(horizontal = 10.dp)
@@ -506,10 +531,17 @@ fun RenderTable(
                             val cellText = rowCells.getOrNull(colIndex) ?: ""
                             val parsedInlines = MarkdownParser.parseInlines(cellText)
                             val annotatedString = buildAnnotatedStringFromInlines(parsedInlines, theme)
+                            val align = alignments.getOrNull(colIndex) ?: com.example.parser.TableAlignment.LEFT
+                            val textAlign = when (align) {
+                                com.example.parser.TableAlignment.CENTER -> androidx.compose.ui.text.style.TextAlign.Center
+                                com.example.parser.TableAlignment.RIGHT -> androidx.compose.ui.text.style.TextAlign.End
+                                else -> androidx.compose.ui.text.style.TextAlign.Start
+                            }
                             Text(
                                 text = annotatedString,
                                 fontSize = 14.sp,
                                 color = theme.textColor,
+                                textAlign = textAlign,
                                 modifier = Modifier
                                     .widthIn(min = 100.dp, max = 220.dp)
                                     .padding(horizontal = 10.dp)
@@ -522,6 +554,27 @@ fun RenderTable(
                 }
             }
         }
+    }
+}
+
+@Composable
+fun RenderHtmlBlock(
+    content: String,
+    theme: MarkdownReadingTheme
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .background(theme.cardBackgroundColor.copy(alpha = 0.3f), RoundedCornerShape(6.dp))
+            .padding(10.dp)
+    ) {
+        Text(
+            text = content,
+            fontSize = 14.sp,
+            fontFamily = FontFamily.Monospace,
+            color = theme.textColor.copy(alpha = 0.8f)
+        )
     }
 }
 

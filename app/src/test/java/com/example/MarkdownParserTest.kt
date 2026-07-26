@@ -93,4 +93,70 @@ class MarkdownParserTest {
         assertTrue(blocks.any { it is MarkdownBlock.BulletList })
         assertTrue(blocks.any { it is MarkdownBlock.OrderedList })
     }
+
+    @Test
+    fun testSetextHeaders() {
+        val markdown = """
+            Setext Heading 1
+            ===
+
+            Setext Heading 2
+            ---
+        """.trimIndent()
+
+        val blocks = parser.parse(markdown)
+        assertEquals(2, blocks.size)
+        assertTrue(blocks[0] is MarkdownBlock.Header && (blocks[0] as MarkdownBlock.Header).level == 1 && (blocks[0] as MarkdownBlock.Header).text == "Setext Heading 1")
+        assertTrue(blocks[1] is MarkdownBlock.Header && (blocks[1] as MarkdownBlock.Header).level == 2 && (blocks[1] as MarkdownBlock.Header).text == "Setext Heading 2")
+    }
+
+    @Test
+    fun testReferenceLinks() {
+        val markdown = """
+            Check [Google][goog] for search.
+
+            [goog]: https://google.com "Google Search"
+        """.trimIndent()
+
+        val blocks = parser.parse(markdown)
+        val paragraph = blocks.filterIsInstance<MarkdownBlock.Paragraph>().firstOrNull()
+        assertTrue(paragraph != null)
+        val link = paragraph?.inlines?.filterIsInstance<MarkdownInline.Link>()?.firstOrNull()
+        assertTrue(link != null)
+        assertEquals("Google", link?.text)
+        assertEquals("https://google.com", link?.url)
+    }
+
+    @Test
+    fun testTableAlignments() {
+        val markdown = """
+            | Left | Center | Right |
+            | :--- | :---: | ---: |
+            | L1   | C1     | R1    |
+        """.trimIndent()
+
+        val blocks = parser.parse(markdown)
+        val table = blocks.filterIsInstance<MarkdownBlock.Table>().firstOrNull()
+        assertTrue(table != null)
+        assertEquals(3, table?.alignments?.size)
+        assertEquals(com.example.parser.TableAlignment.LEFT, table?.alignments?.get(0))
+        assertEquals(com.example.parser.TableAlignment.CENTER, table?.alignments?.get(1))
+        assertEquals(com.example.parser.TableAlignment.RIGHT, table?.alignments?.get(2))
+    }
+
+    @Test
+    fun testEscapedCharactersAndAutolinks() {
+        val inlines = parser.parseInlines("Escaped \\*asterisk\\* and <https://example.com>")
+        val link = inlines.filterIsInstance<MarkdownInline.Link>().firstOrNull()
+        assertTrue(link != null)
+        assertEquals("https://example.com", link?.url)
+
+        val fullText = inlines.joinToString("") {
+            when (it) {
+                is MarkdownInline.Normal -> it.text
+                else -> ""
+            }
+        }
+        assertTrue(fullText.contains("Escaped *asterisk*"))
+    }
 }

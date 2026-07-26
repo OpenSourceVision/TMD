@@ -1,22 +1,41 @@
 package com.example.parser
 
+enum class TableAlignment {
+    LEFT, CENTER, RIGHT
+}
+
 // --- AST Models ---
 
 sealed class MarkdownBlock {
     data class Header(val text: String, val level: Int) : MarkdownBlock()
     data class Paragraph(val inlines: List<MarkdownInline>) : MarkdownBlock()
-    data class BulletList(val items: List<List<MarkdownInline>>) : MarkdownBlock()
-    data class OrderedList(val items: List<List<MarkdownInline>>) : MarkdownBlock()
+    data class BulletList(
+        val items: List<List<MarkdownInline>>,
+        val indentLevels: List<Int> = emptyList()
+    ) : MarkdownBlock()
+    data class OrderedList(
+        val items: List<List<MarkdownInline>>,
+        val indentLevels: List<Int> = emptyList()
+    ) : MarkdownBlock()
     data class TaskList(val items: List<TaskItem>) : MarkdownBlock()
     data class CodeBlock(val code: String, val language: String) : MarkdownBlock()
-    data class BlockQuote(val inlines: List<MarkdownInline>) : MarkdownBlock()
-    data class Table(val headers: List<String>, val rows: List<List<String>>) : MarkdownBlock()
+    data class BlockQuote(
+        val inlines: List<MarkdownInline>,
+        val blocks: List<MarkdownBlock> = emptyList()
+    ) : MarkdownBlock()
+    data class Table(
+        val headers: List<String>,
+        val rows: List<List<String>>,
+        val alignments: List<TableAlignment> = emptyList()
+    ) : MarkdownBlock()
     object HorizontalRule : MarkdownBlock()
+    data class HtmlBlock(val content: String) : MarkdownBlock()
 }
 
 data class TaskItem(
     val isChecked: Boolean,
-    val inlines: List<MarkdownInline>
+    val inlines: List<MarkdownInline>,
+    val indentLevel: Int = 0
 )
 
 sealed class MarkdownInline {
@@ -26,13 +45,24 @@ sealed class MarkdownInline {
     data class BoldItalic(val inlines: List<MarkdownInline>) : MarkdownInline()
     data class Strikethrough(val inlines: List<MarkdownInline>) : MarkdownInline()
     data class InlineCode(val text: String) : MarkdownInline()
-    data class Link(val text: String, val url: String) : MarkdownInline()
-    data class Image(val altText: String, val url: String) : MarkdownInline()
+    data class Link(
+        val text: String,
+        val url: String,
+        val inlines: List<MarkdownInline> = emptyList()
+    ) : MarkdownInline()
+    data class Image(
+        val altText: String,
+        val url: String,
+        val inlines: List<MarkdownInline> = emptyList()
+    ) : MarkdownInline()
 }
 
 enum class MatchType {
-    IMAGE, LINK, AUTO_LINK, BOLD_ITALIC, BOLD, ITALIC, STRIKETHROUGH, INLINE_CODE
+    IMAGE_INLINE, IMAGE_REF, LINK_INLINE, LINK_REF, ANGLE_AUTO_LINK, BARE_AUTO_LINK,
+    BOLD_ITALIC, BOLD, ITALIC, STRIKETHROUGH, INLINE_CODE
 }
+
+data class RefDef(val url: String, val title: String)
 
 // --- Markdown Parser ---
 
@@ -40,16 +70,111 @@ object MarkdownParser {
 
     private fun cleanUrl(rawUrl: String): String {
         var u = rawUrl.trim()
+        if (u.startsWith("<") && u.endsWith(">")) {
+            u = u.substring(1, u.length - 1).trim()
+        }
         if (u.contains(" ")) {
             u = u.substringBefore(" ").trim()
         }
         return u.removeSurrounding("\"", "\"").removeSurrounding("'", "'")
     }
 
+    // Mask escaped characters during inline scanning
+    private const val ESC_AST = "\uE001"
+    private const val ESC_UND = "\uE002"
+    private const val ESC_HASH = "\uE003"
+    private const val ESC_LBRACK = "\uE004"
+    private const val ESC_RBRACK = "\uE005"
+    private const val ESC_LPAREN = "\uE006"
+    private const val ESC_RPAREN = "\uE007"
+    private const val ESC_BSLASH = "\uE008"
+    private const val ESC_PLUS = "\uE009"
+    private const val ESC_MINUS = "\uE00A"
+    private const val ESC_TILDE = "\uE00B"
+    private const val ESC_BACKTICK = "\uE00C"
+    private const val ESC_EXCL = "\uE00D"
+    private const val ESC_PIPE = "\uE00E"
+    private const val ESC_GT = "\uE00F"
+
+    private fun maskEscapes(text: String): String {
+        val sb = StringBuilder()
+        var i = 0
+        while (i < text.length) {
+            if (text[i] == '\\' && i + 1 < text.length) {
+                when (text[i + 1]) {
+                    '*' -> sb.append(ESC_AST)
+                    '_' -> sb.append(ESC_UND)
+                    '#' -> sb.append(ESC_HASH)
+                    '[' -> sb.append(ESC_LBRACK)
+                    ']' -> sb.append(ESC_RBRACK)
+                    '(' -> sb.append(ESC_LPAREN)
+                    ')' -> sb.append(ESC_RPAREN)
+                    '\\' -> sb.append(ESC_BSLASH)
+                    '+' -> sb.append(ESC_PLUS)
+                    '-' -> sb.append(ESC_MINUS)
+                    '~' -> sb.append(ESC_TILDE)
+                    '`' -> sb.append(ESC_BACKTICK)
+                    '!' -> sb.append(ESC_EXCL)
+                    '|' -> sb.append(ESC_PIPE)
+                    '>' -> sb.append(ESC_GT)
+                    else -> sb.append(text[i]).append(text[i + 1])
+                }
+                i += 2
+            } else {
+                sb.append(text[i])
+                i++
+            }
+        }
+        return sb.toString()
+    }
+
+    private fun unmaskEscapes(text: String): String {
+        return text
+            .replace(ESC_AST, "*")
+            .replace(ESC_UND, "_")
+            .replace(ESC_HASH, "#")
+            .replace(ESC_LBRACK, "[")
+            .replace(ESC_RBRACK, "]")
+            .replace(ESC_LPAREN, "(")
+            .replace(ESC_RPAREN, ")")
+            .replace(ESC_BSLASH, "\\")
+            .replace(ESC_PLUS, "+")
+            .replace(ESC_MINUS, "-")
+            .replace(ESC_TILDE, "~")
+            .replace(ESC_BACKTICK, "`")
+            .replace(ESC_EXCL, "!")
+            .replace(ESC_PIPE, "|")
+            .replace(ESC_GT, ">")
+    }
+
     fun parse(text: String): List<MarkdownBlock> {
+        val rawLines = text.split("\n")
+        val refMap = mutableMapOf<String, RefDef>()
+        val filteredLines = mutableListOf<String>()
+
+        // Pass 1: Extract reference link definitions like [ref]: url "title"
+        val refDefRegex = """^\s*\[([^\]]+)\]:\s*(\S+)(?:\s+["'(](.*?)["')])?\s*$""".toRegex()
+        for (line in rawLines) {
+            val match = refDefRegex.matchEntire(line)
+            if (match != null) {
+                val refKey = match.groupValues[1].trim().lowercase()
+                val url = cleanUrl(match.groupValues[2])
+                val title = match.groupValues[3]
+                refMap[refKey] = RefDef(url, title)
+            } else {
+                filteredLines.add(line)
+            }
+        }
+
         val blocks = mutableListOf<MarkdownBlock>()
-        val lines = text.split("\n")
+        val lines = filteredLines
         var index = 0
+
+        val taskListRegex = """^(\s*)[\*\-\+]\s+\[([ xX])\]\s+(.*)$""".toRegex()
+        val bulletListRegex = """^(\s*)[\*\-\+]\s+(.*)$""".toRegex()
+        val orderedListRegex = """^(\s*)(\d+)\.\s+(.*)$""".toRegex()
+        val setextH1Regex = """^\s*={2,}\s*$""".toRegex()
+        val setextH2Regex = """^\s*-{2,}\s*$""".toRegex()
 
         while (index < lines.size) {
             val line = lines[index]
@@ -61,82 +186,128 @@ object MarkdownParser {
                 continue
             }
 
-            // 1. Code Block
-            if (trimmed.startsWith("```")) {
-                val lang = trimmed.removePrefix("```").trim()
+            // 1. Code Block (Fenced: ``` or ~~~)
+            if (trimmed.startsWith("```") || trimmed.startsWith("~~~")) {
+                val fence = if (trimmed.startsWith("```")) "```" else "~~~"
+                val lang = trimmed.removePrefix(fence).trim()
                 val codeLines = mutableListOf<String>()
                 index++
-                while (index < lines.size && !lines[index].trim().startsWith("```")) {
+                while (index < lines.size && !lines[index].trim().startsWith(fence)) {
                     codeLines.add(lines[index])
                     index++
                 }
                 if (index < lines.size) {
-                    index++ // skip closing ```
+                    index++ // skip closing fence
                 }
                 blocks.add(MarkdownBlock.CodeBlock(codeLines.joinToString("\n"), lang))
                 continue
             }
 
-            // 2. Horizontal Rule
-            if (trimmed == "---" || trimmed == "***" || trimmed == "___" || trimmed == "- - -") {
+            // 2. Indented Code Block (4 spaces or 1 tab)
+            if ((line.startsWith("    ") || line.startsWith("\t")) && isCandidateForIndentedCode(lines, index)) {
+                val codeLines = mutableListOf<String>()
+                while (index < lines.size && (lines[index].startsWith("    ") || lines[index].startsWith("\t") || lines[index].trim().isEmpty())) {
+                    val currentLine = lines[index]
+                    val stripped = if (currentLine.startsWith("    ")) currentLine.substring(4) else if (currentLine.startsWith("\t")) currentLine.substring(1) else ""
+                    codeLines.add(stripped)
+                    index++
+                }
+                // Trim trailing empty lines
+                while (codeLines.isNotEmpty() && codeLines.last().isEmpty()) {
+                    codeLines.removeAt(codeLines.size - 1)
+                }
+                if (codeLines.isNotEmpty()) {
+                    blocks.add(MarkdownBlock.CodeBlock(codeLines.joinToString("\n"), ""))
+                    continue
+                }
+            }
+
+            // 3. Horizontal Rule
+            if (trimmed == "---" || trimmed == "***" || trimmed == "___" || trimmed == "- - -" || trimmed == "* * *") {
                 blocks.add(MarkdownBlock.HorizontalRule)
                 index++
                 continue
             }
 
-            // 3. Header
+            // 4. ATX Header (# Heading)
             if (trimmed.startsWith("#")) {
                 var level = 0
                 while (level < trimmed.length && trimmed[level] == '#') {
                     level++
                 }
-                if (level in 1..6 && level < trimmed.length && trimmed[level] == ' ') {
-                    var headerText = trimmed.substring(level + 1).trim()
-                    // Strip optional trailing {#id} or trailing #
+                if (level in 1..6 && (level == trimmed.length || trimmed[level] == ' ')) {
+                    var headerText = if (level < trimmed.length) trimmed.substring(level + 1).trim() else ""
                     headerText = headerText.replace("""\s*\{#.*\}\s*$""".toRegex(), "")
                     headerText = headerText.replace("""\s+#+$""".toRegex(), "")
-                    blocks.add(MarkdownBlock.Header(headerText, level))
+                    blocks.add(MarkdownBlock.Header(unmaskEscapes(headerText), level))
                     index++
                     continue
                 }
             }
 
-            // 4. Blockquote
+            // 5. Blockquote (Supports nested block parsing!)
             if (trimmed.startsWith(">")) {
                 val quoteLines = mutableListOf<String>()
-                while (index < lines.size && lines[index].trim().startsWith(">")) {
-                    val qLine = lines[index].trim().removePrefix(">").trim()
-                    quoteLines.add(qLine)
-                    index++
+                while (index < lines.size && (lines[index].trim().startsWith(">") || (lines[index].trim().isNotEmpty() && quoteLines.isNotEmpty()))) {
+                    val rawLine = lines[index]
+                    if (rawLine.trim().startsWith(">")) {
+                        var stripped = rawLine.trim().substring(1)
+                        if (stripped.startsWith(" ")) stripped = stripped.substring(1)
+                        quoteLines.add(stripped)
+                        index++
+                    } else if (rawLine.startsWith("    ") || rawLine.startsWith("\t") || !isBlockStarter(rawLine.trim())) {
+                        quoteLines.add(rawLine)
+                        index++
+                    } else {
+                        break
+                    }
                 }
-                val fullQuoteText = quoteLines.joinToString(" ")
-                blocks.add(MarkdownBlock.BlockQuote(parseInlines(fullQuoteText)))
+                val innerContent = quoteLines.joinToString("\n")
+                val innerBlocks = parse(innerContent)
+                val directInlines = parseInlines(quoteLines.joinToString(" "), refMap)
+                blocks.add(MarkdownBlock.BlockQuote(directInlines, innerBlocks))
                 continue
             }
 
-            // 5. Table
+            // 6. Table
             if (trimmed.contains("|") && index + 1 < lines.size && isTableSeparator(lines[index + 1].trim())) {
                 val headers = parseTableRow(trimmed)
-                index += 2 // skip header and separator line
+                val alignments = parseTableAlignments(lines[index + 1].trim())
+                index += 2 // skip header and separator
                 val rows = mutableListOf<List<String>>()
                 while (index < lines.size && lines[index].trim().contains("|") && lines[index].trim().isNotEmpty()) {
                     rows.add(parseTableRow(lines[index].trim()))
                     index++
                 }
-                blocks.add(MarkdownBlock.Table(headers, rows))
+                blocks.add(MarkdownBlock.Table(headers, rows, alignments))
                 continue
             }
 
-            // 6. Task List (- [ ] or - [x])
-            val taskListRegex = """^[\*\-\+]\s+\[([ xX])\]\s+(.*)$""".toRegex()
-            if (taskListRegex.matches(trimmed)) {
+            // 7. Setext Header check for next line (=== or ---)
+            if (index + 1 < lines.size && !isBlockStarter(trimmed)) {
+                val nextTrimmed = lines[index + 1].trim()
+                if (setextH1Regex.matches(nextTrimmed)) {
+                    blocks.add(MarkdownBlock.Header(unmaskEscapes(trimmed), 1))
+                    index += 2
+                    continue
+                } else if (setextH2Regex.matches(nextTrimmed) && !trimmed.startsWith("- ") && !trimmed.startsWith("* ")) {
+                    blocks.add(MarkdownBlock.Header(unmaskEscapes(trimmed), 2))
+                    index += 2
+                    continue
+                }
+            }
+
+            // 8. Task List (- [ ] or - [x])
+            if (taskListRegex.matches(line)) {
                 val taskItems = mutableListOf<TaskItem>()
-                while (index < lines.size && taskListRegex.matches(lines[index].trim())) {
-                    val match = taskListRegex.matchEntire(lines[index].trim())
+                while (index < lines.size && taskListRegex.matches(lines[index])) {
+                    val match = taskListRegex.find(lines[index])
                     if (match != null) {
-                        val isChecked = match.groupValues[1].equals("x", ignoreCase = true)
-                        val content = match.groupValues[2].trim()
-                        taskItems.add(TaskItem(isChecked, parseInlines(content)))
+                        val indentSpaces = match.groupValues[1].length
+                        val indentLevel = indentSpaces / 2
+                        val isChecked = match.groupValues[2].equals("x", ignoreCase = true)
+                        val content = match.groupValues[3].trim()
+                        taskItems.add(TaskItem(isChecked, parseInlines(content, refMap), indentLevel))
                     }
                     index++
                 }
@@ -144,59 +315,125 @@ object MarkdownParser {
                 continue
             }
 
-            // 7. Bullet List
-            if (trimmed.startsWith("* ") || trimmed.startsWith("- ") || trimmed.startsWith("+ ")) {
+            // 9. Bullet List (Supports nested indentation!)
+            if (bulletListRegex.matches(line) && !taskListRegex.matches(line)) {
                 val listItems = mutableListOf<List<MarkdownInline>>()
-                while (index < lines.size && (lines[index].trim().startsWith("* ") || lines[index].trim().startsWith("- ") || lines[index].trim().startsWith("+ "))
-                    && !taskListRegex.matches(lines[index].trim())) {
-                    val rawItem = lines[index].trim()
-                    val prefix = if (rawItem.startsWith("* ")) "* " else if (rawItem.startsWith("- ")) "- " else "+ "
-                    val content = rawItem.removePrefix(prefix).trim()
-                    listItems.add(parseInlines(content))
-                    index++
-                }
-                blocks.add(MarkdownBlock.BulletList(listItems))
-                continue
-            }
-
-            // 8. Ordered List
-            val orderedListRegex = """^(\d+)\.\s+(.*)$""".toRegex()
-            if (orderedListRegex.matches(trimmed)) {
-                val listItems = mutableListOf<List<MarkdownInline>>()
-                while (index < lines.size && orderedListRegex.matches(lines[index].trim())) {
-                    val match = orderedListRegex.matchEntire(lines[index].trim())
+                val indentLevels = mutableListOf<Int>()
+                while (index < lines.size && bulletListRegex.matches(lines[index]) && !taskListRegex.matches(lines[index])) {
+                    val match = bulletListRegex.find(lines[index])
                     if (match != null) {
+                        val indentSpaces = match.groupValues[1].length
+                        val indentLevel = indentSpaces / 2
                         val content = match.groupValues[2].trim()
-                        listItems.add(parseInlines(content))
+
+                        // Collect multi-line continuation if any
+                        index++
+                        val itemLines = mutableListOf(content)
+                        while (index < lines.size && lines[index].trim().isNotEmpty()
+                            && !bulletListRegex.matches(lines[index])
+                            && !orderedListRegex.matches(lines[index])
+                            && !isBlockStarter(lines[index].trim())) {
+                            itemLines.add(lines[index].trim())
+                            index++
+                        }
+                        listItems.add(parseInlines(joinParagraphLines(itemLines), refMap))
+                        indentLevels.add(indentLevel)
+                    } else {
+                        index++
                     }
-                    index++
                 }
-                blocks.add(MarkdownBlock.OrderedList(listItems))
+                blocks.add(MarkdownBlock.BulletList(listItems, indentLevels))
                 continue
             }
 
-            // 9. Paragraph
+            // 10. Ordered List (Supports nested indentation!)
+            if (orderedListRegex.matches(line)) {
+                val listItems = mutableListOf<List<MarkdownInline>>()
+                val indentLevels = mutableListOf<Int>()
+                while (index < lines.size && orderedListRegex.matches(lines[index])) {
+                    val match = orderedListRegex.find(lines[index])
+                    if (match != null) {
+                        val indentSpaces = match.groupValues[1].length
+                        val indentLevel = indentSpaces / 2
+                        val content = match.groupValues[3].trim()
+
+                        index++
+                        val itemLines = mutableListOf(content)
+                        while (index < lines.size && lines[index].trim().isNotEmpty()
+                            && !bulletListRegex.matches(lines[index])
+                            && !orderedListRegex.matches(lines[index])
+                            && !isBlockStarter(lines[index].trim())) {
+                            itemLines.add(lines[index].trim())
+                            index++
+                        }
+                        listItems.add(parseInlines(joinParagraphLines(itemLines), refMap))
+                        indentLevels.add(indentLevel)
+                    } else {
+                        index++
+                    }
+                }
+                blocks.add(MarkdownBlock.OrderedList(listItems, indentLevels))
+                continue
+            }
+
+            // 11. HTML Block
+            if (trimmed.startsWith("<") && (trimmed.endsWith(">") || trimmed.contains(">"))) {
+                val htmlTagRegex = """^</?[a-zA-Z][^>]*>""".toRegex()
+                if (htmlTagRegex.containsMatchIn(trimmed)) {
+                    val htmlLines = mutableListOf<String>()
+                    while (index < lines.size && lines[index].trim().isNotEmpty()) {
+                        htmlLines.add(lines[index])
+                        index++
+                    }
+                    blocks.add(MarkdownBlock.HtmlBlock(htmlLines.joinToString("\n")))
+                    continue
+                }
+            }
+
+            // 12. Paragraph
             val paragraphLines = mutableListOf<String>()
             while (index < lines.size && lines[index].trim().isNotEmpty()
                 && !lines[index].trim().startsWith("```")
+                && !lines[index].trim().startsWith("~~~")
                 && !lines[index].trim().startsWith("#")
                 && !lines[index].trim().startsWith(">")
-                && !lines[index].trim().startsWith("* ")
-                && !lines[index].trim().startsWith("- ")
-                && !lines[index].trim().startsWith("+ ")
-                && !orderedListRegex.matches(lines[index].trim())
-                && !taskListRegex.matches(lines[index].trim())
+                && !bulletListRegex.matches(lines[index])
+                && !orderedListRegex.matches(lines[index])
+                && !taskListRegex.matches(lines[index])
                 && !(lines[index].trim().contains("|") && index + 1 < lines.size && isTableSeparator(lines[index + 1].trim()))
                 && lines[index].trim() != "---" && lines[index].trim() != "***" && lines[index].trim() != "___") {
-                paragraphLines.add(lines[index].trim())
+
+                // Check Setext header trigger on next line
+                if (index + 1 < lines.size) {
+                    val nextLine = lines[index + 1].trim()
+                    if (setextH1Regex.matches(nextLine) || setextH2Regex.matches(nextLine)) {
+                        break
+                    }
+                }
+                paragraphLines.add(lines[index])
                 index++
             }
+
             if (paragraphLines.isNotEmpty()) {
                 val paragraphText = joinParagraphLines(paragraphLines)
-                blocks.add(MarkdownBlock.Paragraph(parseInlines(paragraphText)))
+                blocks.add(MarkdownBlock.Paragraph(parseInlines(paragraphText, refMap)))
             }
         }
+
         return blocks
+    }
+
+    private fun isBlockStarter(trimmed: String): Boolean {
+        return trimmed.startsWith("#") || trimmed.startsWith("```") || trimmed.startsWith("~~~")
+                || trimmed.startsWith(">") || trimmed.startsWith("* ") || trimmed.startsWith("- ")
+                || trimmed.startsWith("+ ") || trimmed.matches("""^\d+\.\s+.*""".toRegex())
+                || trimmed == "---" || trimmed == "***" || trimmed == "___"
+    }
+
+    private fun isCandidateForIndentedCode(lines: List<String>, index: Int): Boolean {
+        if (index == 0) return true
+        val prevTrimmed = lines[index - 1].trim()
+        return prevTrimmed.isEmpty()
     }
 
     private fun isTableSeparator(line: String): Boolean {
@@ -204,6 +441,21 @@ object MarkdownParser {
         return cells.isNotEmpty() && cells.all { cell ->
             val cleaned = cell.trim()
             cleaned.isNotEmpty() && cleaned.all { c -> c == '-' || c == ':' || c == ' ' }
+        }
+    }
+
+    private fun parseTableAlignments(line: String): List<TableAlignment> {
+        val cells = parseTableRow(line)
+        return cells.map { cell ->
+            val cleaned = cell.trim()
+            val starts = cleaned.startsWith(":")
+            val ends = cleaned.endsWith(":")
+            when {
+                starts && ends -> TableAlignment.CENTER
+                ends -> TableAlignment.RIGHT
+                starts -> TableAlignment.LEFT
+                else -> TableAlignment.LEFT
+            }
         }
     }
 
@@ -239,17 +491,23 @@ object MarkdownParser {
         val sb = StringBuilder()
         for (i in lines.indices) {
             val curr = lines[i]
+            val currTrimmed = curr.trim()
             if (i > 0) {
                 val prev = lines[i - 1]
-                val lastChar = prev.lastOrNull() ?: ' '
-                val firstChar = curr.firstOrNull() ?: ' '
-                if (isCjk(lastChar) && isCjk(firstChar)) {
-                    // Do not insert space between Chinese / CJK characters
+                // Hard line break check (trailing 2+ spaces or trailing backslash)
+                if (prev.endsWith("  ") || prev.endsWith("\\")) {
+                    sb.append("\n")
                 } else {
-                    sb.append(" ")
+                    val lastChar = prev.trim().lastOrNull() ?: ' '
+                    val firstChar = currTrimmed.firstOrNull() ?: ' '
+                    if (isCjk(lastChar) && isCjk(firstChar)) {
+                        // CJK characters: no space
+                    } else {
+                        sb.append(" ")
+                    }
                 }
             }
-            sb.append(curr)
+            sb.append(currTrimmed)
         }
         return sb.toString()
     }
@@ -265,12 +523,18 @@ object MarkdownParser {
                 || block == Character.UnicodeBlock.KATAKANA
     }
 
-    fun parseInlines(text: String): List<MarkdownInline> {
+    fun parseInlines(text: String, refMap: Map<String, RefDef> = emptyMap()): List<MarkdownInline> {
         if (text.isEmpty()) return emptyList()
 
-        val imageRegex = """!\[(.*?)\]\((.*?)\)""".toRegex()
-        val linkRegex = """(?<!\!)\[(.*?)\]\((.*?)\)""".toRegex()
-        val autoLinkRegex = """(?<![\(\]])\b(https?://[^\s<>\)]+)\b""".toRegex()
+        val maskedText = maskEscapes(text)
+
+        // Regexes for inline elements
+        val imageInlineRegex = """!\[(.*?)\]\((.*?)\)""".toRegex()
+        val imageRefRegex = """!\[(.*?)\]\[(.*?)\]|!\[(.*?)\]\[\]""".toRegex()
+        val linkInlineRegex = """(?<!\!)\[(.*?)\]\((.*?)\)""".toRegex()
+        val linkRefRegex = """(?<!\!)\[(.*?)\]\[(.*?)\]|(?<!\!)\[(.*?)\]\[\]""".toRegex()
+        val angleAutoLinkRegex = """<((?:https?://|mailto:)[^>]+)>""".toRegex()
+        val bareAutoLinkRegex = """(?<![\(\]])\b(https?://[^\s<>\)]+)\b""".toRegex()
         val boldItalicRegex = """\*\*\*(.*?)\*\*\*|(?<!\w)___(.*?)___(?!\w)""".toRegex()
         val boldRegex = """\*\*(.*?)\*\*|(?<!\w)__(.*?)__(?!\w)""".toRegex()
         val italicRegex = """\*(.*?)\*|(?<!\w)_(.*?)_(?!\w)""".toRegex()
@@ -280,33 +544,27 @@ object MarkdownParser {
         var earliestMatch: MatchResult? = null
         var earliestType: MatchType? = null
 
-        val imgMatch = imageRegex.find(text)
-        val linkMatch = linkRegex.find(text)
-        val autoMatch = autoLinkRegex.find(text)
-        val biMatch = boldItalicRegex.find(text)
-        val bMatch = boldRegex.find(text)
-        val itMatch = italicRegex.find(text)
-        val stMatch = strikethroughRegex.find(text)
-        val codeMatch = inlineCodeRegex.find(text)
-
         fun updateEarliest(match: MatchResult?, type: MatchType) {
             if (match != null) {
-                val currentEarliest = earliestMatch
-                if (currentEarliest == null || match.range.first < currentEarliest.range.first) {
+                val current = earliestMatch
+                if (current == null || match.range.first < current.range.first) {
                     earliestMatch = match
                     earliestType = type
                 }
             }
         }
 
-        updateEarliest(imgMatch, MatchType.IMAGE)
-        updateEarliest(linkMatch, MatchType.LINK)
-        updateEarliest(autoMatch, MatchType.AUTO_LINK)
-        updateEarliest(biMatch, MatchType.BOLD_ITALIC)
-        updateEarliest(bMatch, MatchType.BOLD)
-        updateEarliest(itMatch, MatchType.ITALIC)
-        updateEarliest(stMatch, MatchType.STRIKETHROUGH)
-        updateEarliest(codeMatch, MatchType.INLINE_CODE)
+        updateEarliest(imageInlineRegex.find(maskedText), MatchType.IMAGE_INLINE)
+        updateEarliest(imageRefRegex.find(maskedText), MatchType.IMAGE_REF)
+        updateEarliest(linkInlineRegex.find(maskedText), MatchType.LINK_INLINE)
+        updateEarliest(linkRefRegex.find(maskedText), MatchType.LINK_REF)
+        updateEarliest(angleAutoLinkRegex.find(maskedText), MatchType.ANGLE_AUTO_LINK)
+        updateEarliest(bareAutoLinkRegex.find(maskedText), MatchType.BARE_AUTO_LINK)
+        updateEarliest(boldItalicRegex.find(maskedText), MatchType.BOLD_ITALIC)
+        updateEarliest(boldRegex.find(maskedText), MatchType.BOLD)
+        updateEarliest(italicRegex.find(maskedText), MatchType.ITALIC)
+        updateEarliest(strikethroughRegex.find(maskedText), MatchType.STRIKETHROUGH)
+        updateEarliest(inlineCodeRegex.find(maskedText), MatchType.INLINE_CODE)
 
         val match = earliestMatch
         val type = earliestType
@@ -315,52 +573,70 @@ object MarkdownParser {
             val start = match.range.first
             val end = match.range.last + 1
 
-            val prefix = text.substring(0, start)
-            val suffix = text.substring(end)
+            val prefix = maskedText.substring(0, start)
+            val suffix = maskedText.substring(end)
 
-            val inlineElement = when (type) {
-                MatchType.IMAGE -> {
-                    val alt = match.groupValues[1]
+            val inlineElement: MarkdownInline = when (type) {
+                MatchType.IMAGE_INLINE -> {
+                    val alt = unmaskEscapes(match.groupValues[1])
                     val url = cleanUrl(match.groupValues[2])
-                    MarkdownInline.Image(alt, url)
+                    MarkdownInline.Image(alt, url, parseInlines(alt, refMap))
                 }
-                MatchType.LINK -> {
-                    val linkText = match.groupValues[1]
+                MatchType.IMAGE_REF -> {
+                    val alt = unmaskEscapes(match.groupValues[1].ifEmpty { match.groupValues[3] })
+                    val refKey = (match.groupValues[2].ifEmpty { alt }).lowercase()
+                    val url = refMap[refKey]?.url ?: ""
+                    MarkdownInline.Image(alt, url, parseInlines(alt, refMap))
+                }
+                MatchType.LINK_INLINE -> {
+                    val linkText = unmaskEscapes(match.groupValues[1])
                     val url = cleanUrl(match.groupValues[2])
-                    MarkdownInline.Link(linkText, url)
+                    MarkdownInline.Link(linkText, url, parseInlines(linkText, refMap))
                 }
-                MatchType.AUTO_LINK -> {
-                    val url = cleanUrl(match.groupValues[1])
+                MatchType.LINK_REF -> {
+                    val linkText = unmaskEscapes(match.groupValues[1].ifEmpty { match.groupValues[3] })
+                    val refKey = (match.groupValues[2].ifEmpty { linkText }).lowercase()
+                    val url = refMap[refKey]?.url ?: ""
+                    MarkdownInline.Link(linkText, url, parseInlines(linkText, refMap))
+                }
+                MatchType.ANGLE_AUTO_LINK -> {
+                    val rawUrl = unmaskEscapes(match.groupValues[1])
+                    val url = cleanUrl(rawUrl)
+                    MarkdownInline.Link(url, url)
+                }
+                MatchType.BARE_AUTO_LINK -> {
+                    val rawUrl = unmaskEscapes(match.groupValues[1])
+                    val url = cleanUrl(rawUrl)
                     MarkdownInline.Link(url, url)
                 }
                 MatchType.BOLD_ITALIC -> {
                     val content = match.groupValues.getOrNull(1)?.takeIf { it.isNotEmpty() }
                         ?: match.groupValues.getOrNull(2) ?: ""
-                    MarkdownInline.BoldItalic(parseInlines(content))
+                    MarkdownInline.BoldItalic(parseInlines(content, refMap))
                 }
                 MatchType.BOLD -> {
                     val content = match.groupValues.getOrNull(1)?.takeIf { it.isNotEmpty() }
                         ?: match.groupValues.getOrNull(2) ?: ""
-                    MarkdownInline.Bold(parseInlines(content))
+                    MarkdownInline.Bold(parseInlines(content, refMap))
                 }
                 MatchType.ITALIC -> {
                     val content = match.groupValues.getOrNull(1)?.takeIf { it.isNotEmpty() }
                         ?: match.groupValues.getOrNull(2) ?: ""
-                    MarkdownInline.Italic(parseInlines(content))
+                    MarkdownInline.Italic(parseInlines(content, refMap))
                 }
                 MatchType.STRIKETHROUGH -> {
                     val content = match.groupValues[1]
-                    MarkdownInline.Strikethrough(parseInlines(content))
+                    MarkdownInline.Strikethrough(parseInlines(content, refMap))
                 }
                 MatchType.INLINE_CODE -> {
-                    val content = match.groupValues[1]
+                    val content = unmaskEscapes(match.groupValues[1])
                     MarkdownInline.InlineCode(content)
                 }
             }
 
-            return parseInlines(prefix) + listOf(inlineElement) + parseInlines(suffix)
+            return parseInlines(prefix, refMap) + listOf(inlineElement) + parseInlines(suffix, refMap)
         }
 
-        return listOf(MarkdownInline.Normal(text))
+        return listOf(MarkdownInline.Normal(unmaskEscapes(maskedText)))
     }
 }
